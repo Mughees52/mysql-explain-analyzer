@@ -317,8 +317,7 @@ function generateActionPlan(
   // 2. Critical issues that aren't covered by index recs
   const criticalIssues = issues.filter(i =>
     i.severity === 'critical' &&
-    i.category !== 'index' &&
-    !steps.some(s => s.ddl && i.nodeId && s.action.includes(i.nodeName))
+    !steps.some(s => i.nodeName && s.action.includes(i.nodeName))
   )
   for (const issue of criticalIssues) {
     if (issue.category === 'subquery') {
@@ -342,6 +341,23 @@ function generateActionPlan(
         action: `Add missing JOIN condition`,
         reason: issue.description,
         estimatedImpact: 'Eliminates cross product — row count drops dramatically',
+      })
+    } else if (issue.category === 'scan' && issue.title.includes('Full table scan')) {
+      // Extract table name from title: "Full table scan on `tablename`"
+      const tableMatch = issue.title.match(/`([^`]+)`/)
+      const tableName = tableMatch ? tableMatch[1] : issue.nodeName
+      steps.push({
+        priority: priority++,
+        action: `Add an index on \`${tableName}\` for the WHERE/JOIN columns`,
+        reason: issue.description,
+        estimatedImpact: 'Converts full table scan to index lookup — typically 90-99% fewer rows read',
+      })
+    } else if (issue.category === 'sort' && issue.title.includes('Filesort')) {
+      steps.push({
+        priority: priority++,
+        action: `Add an index matching the ORDER BY columns`,
+        reason: issue.description,
+        estimatedImpact: 'Eliminates filesort — rows returned in index order',
       })
     }
   }
@@ -369,7 +385,10 @@ function generateVerdict(result: AnalysisResult, root: PlanNode, rootCauses: Roo
   const totalTime = root.actualTimeLast
 
   if (s.critical === 0 && s.warnings === 0) {
-    return `This query plan looks good. ${s.good} optimizations are active, no significant issues detected.`
+    if (s.good > 0) {
+      return `This query plan looks good. ${s.good} optimization${s.good > 1 ? 's' : ''} active (covering indexes, efficient access types). No issues detected.`
+    }
+    return `This query plan looks clean. No performance issues detected.`
   }
 
   if (s.critical >= 3) {
